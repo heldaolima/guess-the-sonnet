@@ -40,12 +40,12 @@ func handler(conn net.Conn) {
 
 func main() {
 	server, err := net.Listen("tcp", ":"+PORT)
-	defer server.Close()
-
 	if err != nil {
-		fmt.Println("Error creating server")
-		panic(err)
+		fmt.Println("Error creating server:", err)
+		return
 	}
+
+	defer server.Close()
 
 	fmt.Println("Server listening on port " + PORT)
 	for {
