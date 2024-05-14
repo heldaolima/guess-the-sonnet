@@ -24,8 +24,16 @@ func main() {
 	fmt.Println("Connection established with the server!")
 
 	for {
-		fmt.Print("\nSend a message to the server: ")
+		buffer := make([]byte, 1024)
+		msgLen, err := conn.Read(buffer)
+		if err != nil {
+			fmt.Println("Error reading content from the server: ", err)
+			continue
+		}
 
+		fmt.Println(string(buffer[:msgLen]))
+
+		fmt.Print("\nSend: ")
 		reader := bufio.NewReader(os.Stdin)
 		msg, _ := reader.ReadString('\n')
 
@@ -35,17 +43,9 @@ func main() {
 			continue
 		}
 
-		buffer := make([]byte, 1024)
-		msgLen, err := conn.Read(buffer)
-		if err != nil {
-			fmt.Println("Error reading content from the server: ", err)
-			continue
-		}
-
-		fmt.Println("Received:", string(buffer[:msgLen]))
-
 		if msg == "-1\n" {
 			conn.Close()
+			fmt.Println("Connection closed")
 			break
 		}
 	}
