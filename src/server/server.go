@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"guess_the_sonnet_server/sonnets"
 	"io"
 	"math/rand"
 	"net"
@@ -13,18 +14,12 @@ import (
 
 const (
 	PORT              = "9999"
-	POEMS_DIR         = "poems/"
+	POEMS_DIR         = "sonnets/poems/"
 	END_OF_CONN_MSG   = "!!!"
 	LINES_IN_A_SONNET = 14
 )
 
-type Sonnet struct {
-	file   os.DirEntry
-	title  string
-	author string
-}
-
-var sonnets []Sonnet
+var poems []sonnets.Sonnet
 var lenSonnets int
 
 func getLineFromPoem(r io.Reader, lineNum int) (string, error) {
@@ -46,63 +41,19 @@ func getLineFromPoem(r io.Reader, lineNum int) (string, error) {
 	return "", io.EOF
 }
 
-func getPoems() error {
-	files, err := os.ReadDir(POEMS_DIR)
-	if err != nil {
-		fmt.Println("Error reading poems dir: ", err)
-		return err
-	}
-
-	lenSonnets = len(files)
-	sonnets = make([]Sonnet, lenSonnets)
-
-	for i, file := range files {
-		filePtr, err := os.Open(POEMS_DIR + file.Name())
-		if err != nil {
-			fmt.Printf("Error opening %v: %v\n", file, err)
-			return err
-		}
-		defer filePtr.Close()
-
-		reader := bufio.NewReader(filePtr)
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			fmt.Printf("Error reading %v: %v\n", file.Name(), err)
-			return err
-		}
-
-		metadata := strings.Split(string(line), "-")
-
-		sonnets[i] = Sonnet{
-			file:   file,
-			title:  strings.Trim(metadata[1][:len(metadata[1])-1], " "),
-			author: strings.Trim(metadata[0], " "),
-		}
-	}
-
-	return nil
-}
-
 func handlePlay(conn net.Conn) {
-
-	sonnetsCopy := sonnets
+	poemsCopy := poems
 	for {
 		rand.Shuffle(lenSonnets, func(i, j int) {
-			sonnetsCopy[i], sonnetsCopy[j] = sonnetsCopy[j], sonnetsCopy[i]
+			poemsCopy[i], poemsCopy[j] = poemsCopy[j], poemsCopy[i]
 		})
 
 		randIdx := rand.Intn(lenSonnets)
-		sonnet, err := os.ReadFile(POEMS_DIR + sonnetsCopy[randIdx].file.Name())
-		if err != nil {
-			fmt.Printf("Error openning poem %v: %v", sonnetsCopy[randIdx].file.Name(), err)
-			conn.Write([]byte("Erro inicializar jogo"))
-			return
-		}
-
 		randLine := rand.Intn(LINES_IN_A_SONNET) + 1
-		line, err := getLineFromPoem(strings.NewReader(string(sonnet)), randLine)
+
+		line, err := poemsCopy[randIdx].GetLine(POEMS_DIR, randLine)
 		if err != nil {
-			fmt.Printf("Error getting line from %v: %v", sonnetsCopy[randIdx].file.Name(), err)
+			fmt.Printf("Error getting line from %v: %v", poemsCopy[randIdx].File.Name(), err)
 			conn.Write([]byte("Erro inicializar jogo"))
 			return
 		}
@@ -117,7 +68,7 @@ Verso: %v
 Opções:`, line)
 
 		for i := 0; i < lenSonnets; i++ {
-			msg += fmt.Sprintf("\n[%v] %v", i, sonnets[i].title)
+			msg += fmt.Sprintf("\n[%v] %v", i, poemsCopy[i].Title)
 		}
 
 		conn.Write([]byte(msg))
@@ -151,8 +102,8 @@ Opções:`, line)
 
 func handleReadPoems(conn net.Conn) {
 	msg := ""
-	for i, poem := range sonnets {
-		msg += fmt.Sprintf("[%v] %v - %v\n", i, poem.author, poem.title)
+	for i, poem := range poems {
+		msg += fmt.Sprintf("[%v] %v - %v\n", i, poem.Author, poem.Title)
 	}
 
 	conn.Write([]byte(msg))
@@ -172,10 +123,10 @@ func handleReadPoems(conn net.Conn) {
 			continue
 		}
 
-		poem, err := os.ReadFile(POEMS_DIR + sonnets[choice].file.Name())
+		poem, err := os.ReadFile(POEMS_DIR + poems[choice].File.Name())
 		if err != nil {
-			fmt.Println("Error opening", sonnets[choice].title, ": ", err)
-			conn.Write([]byte("Error opening " + sonnets[choice].title))
+			fmt.Println("Error opening", poems[choice].Title, ": ", err)
+			conn.Write([]byte("Error opening " + poems[choice].Title))
 			continue
 		}
 
@@ -233,11 +184,15 @@ func handler(conn net.Conn) {
 }
 
 func main() {
-	err := getPoems()
+	var err error
+
+	poems, err = sonnets.GetSonnets(POEMS_DIR)
 	if err != nil {
 		fmt.Println("Error getting the poems: ", err)
 		return
 	}
+
+	lenSonnets = len(poems)
 
 	server, err := net.Listen("tcp", ":"+PORT)
 	if err != nil {
