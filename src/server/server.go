@@ -17,7 +17,10 @@ const (
 	STATE_SHOW_POEMS
 	STATE_SELECT_POEMS
 	STATE_POEM_SELECTED
-	STATE_START_GAME
+	STATE_GAME_START
+	STATE_GAME_GUESS
+	STATE_GAME_WIN
+	STATE_GAME_LOSS
 	STATE_INVALID_CHOICE
 	STATE_BREAK_CONNECTION
 	STATE_ERROR
@@ -31,28 +34,27 @@ const (
 )
 
 var poems []sonnets.Sonnet
+var shuffledPoems []sonnets.Sonnet
 var previousState int
 var lenSonnets int
 var chosenSonnetToRead int
+var chosenSonnetGame int
 
-func handlePlay(conn net.Conn) {
-	poemsCopy := poems
-	for {
-		rand.Shuffle(lenSonnets, func(i, j int) {
-			poemsCopy[i], poemsCopy[j] = poemsCopy[j], poemsCopy[i]
-		})
+func getStartGameMsg() (string, error) {
+	shuffledPoems = poems
+	rand.Shuffle(lenSonnets, func(i, j int) {
+		shuffledPoems[i], shuffledPoems[j] = shuffledPoems[j], shuffledPoems[i]
+	})
 
-		randIdx := rand.Intn(lenSonnets)
-		randLine := rand.Intn(LINES_IN_A_SONNET) + 1
+	chosenSonnetGame = rand.Intn(lenSonnets)
+	randLine := rand.Intn(LINES_IN_A_SONNET) + 1
 
-		line, err := poemsCopy[randIdx].GetLine(POEMS_DIR, randLine)
-		if err != nil {
-			fmt.Printf("Error getting line from %v: %v", poemsCopy[randIdx].File.Name(), err)
-			conn.Write([]byte("Erro inicializar jogo"))
-			return
-		}
+	line, err := shuffledPoems[chosenSonnetGame].GetLine(POEMS_DIR, randLine)
+	if err != nil {
+		return "", err
+	}
 
-		msg := fmt.Sprintf(`-- Jogo dos Sonetos --
+	msg := fmt.Sprintf(`-- Jogo dos Sonetos --
 - Você receberá um verso de um soneto
 - Basta escolher, dentre as alternativas, a qual soneto pertence o verso
 ------------------------------------------
@@ -61,37 +63,13 @@ Verso: %v
 ------------------------------------------
 Opções:`, line)
 
-		for i := 0; i < lenSonnets; i++ {
-			msg += fmt.Sprintf("\n[%v] %v", i, poemsCopy[i].Title)
-		}
-
-		conn.Write([]byte(msg))
-
-		scanner := bufio.NewScanner(conn)
-		for scanner.Scan() {
-			client_msg := scanner.Text()
-
-			choice, err := strconv.Atoi(strings.Trim(client_msg, " "))
-			if choice == -1 {
-				conn.Write([]byte("Saindo do jogo"))
-				return
-			}
-
-			if err != nil || choice >= lenSonnets || choice < 0 {
-				conn.Write([]byte("Mensagem inválida: [" + client_msg + "]"))
-				continue
-			}
-
-			if choice == randIdx {
-				conn.Write([]byte("Resposta correta!"))
-				return
-			} else {
-				conn.Write([]byte("Resposta incorreta."))
-				continue
-			}
-
-		}
+	for i := 0; i < lenSonnets; i++ {
+		msg += fmt.Sprintf("\n[%v] %v", i, shuffledPoems[i].Title)
 	}
+
+	msg += "\n[-1] Sair"
+
+	return msg, nil
 }
 
 func getSelectedPoem() (string, error) {
@@ -113,18 +91,29 @@ func handleChoice(choice int, state *int) {
 		case 1:
 			*state = STATE_SHOW_POEMS
 		case 2:
-			*state = STATE_START_GAME
+			*state = STATE_GAME_START
 		default:
 			*state = STATE_INVALID_CHOICE
 		}
 	case STATE_SELECT_POEMS:
 		if choice == -1 {
 			*state = STATE_FIRST_SCREEN
-		} else if choice < -1 || choice > lenSonnets {
+		} else if choice < -1 || choice >= lenSonnets {
 			*state = STATE_INVALID_CHOICE
 		} else {
 			*state = STATE_POEM_SELECTED
 			chosenSonnetToRead = choice
+		}
+
+	case STATE_GAME_GUESS:
+		if choice == -1 {
+			*state = STATE_FIRST_SCREEN
+		} else if choice < -1 || choice >= lenSonnets {
+			*state = STATE_INVALID_CHOICE
+		} else if choice == chosenSonnetGame {
+			*state = STATE_GAME_WIN
+		} else if choice != chosenSonnetGame {
+			*state = STATE_GAME_LOSS
 		}
 	default:
 		return
@@ -148,10 +137,29 @@ func getMsg(state *int) string {
 		poem, err := getSelectedPoem()
 		if err != nil {
 			fmt.Println("Error reading selected poem:", err)
-			return "Erro ao carregar o poema."
+			*state = STATE_SELECT_POEMS
+			return "Erro ao carregar o poema. Tente novamente."
 		}
 		*state = STATE_RETURN_TO_FIRST_SCREEN
 		return poem
+
+	case STATE_GAME_START:
+		msg, err := getStartGameMsg()
+		if err != nil {
+			fmt.Println("Error loading game: ", err)
+			*state = STATE_RETURN_TO_FIRST_SCREEN
+			return "Erro ao carregar o jogo. Tente novamente."
+		}
+		*state = STATE_GAME_GUESS
+		return msg
+
+	case STATE_GAME_WIN:
+		*state = STATE_RETURN_TO_FIRST_SCREEN
+		return "Resposta correta!\n"
+
+	case STATE_GAME_LOSS:
+		*state = STATE_GAME_GUESS
+		return "Resposta incorreta. Tente novamente!"
 
 	case STATE_BREAK_CONNECTION:
 		return "!!!"
