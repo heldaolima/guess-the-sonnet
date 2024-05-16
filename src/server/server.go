@@ -4,12 +4,23 @@ import (
 	"bufio"
 	"fmt"
 	"guess_the_sonnet_server/sonnets"
-	"io"
 	"math/rand"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+)
+
+const (
+	STATE_FIRST_SCREEN = iota
+	STATE_RETURN_TO_FIRST_SCREEN
+	STATE_SHOW_POEMS
+	STATE_SELECT_POEMS
+	STATE_POEM_SELECTED
+	STATE_START_GAME
+	STATE_INVALID_CHOICE
+	STATE_BREAK_CONNECTION
+	STATE_ERROR
 )
 
 const (
@@ -20,26 +31,9 @@ const (
 )
 
 var poems []sonnets.Sonnet
+var previousState int
 var lenSonnets int
-
-func getLineFromPoem(r io.Reader, lineNum int) (string, error) {
-	lastLine := 0
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		if lastLine == 0 {
-			lastLine++
-			continue // skip author - title
-		}
-
-		if lastLine == lineNum {
-			return scanner.Text(), scanner.Err()
-		}
-
-		lastLine++
-	}
-
-	return "", io.EOF
-}
+var chosenSonnetToRead int
 
 func handlePlay(conn net.Conn) {
 	poemsCopy := poems
@@ -100,92 +94,123 @@ Opções:`, line)
 	}
 }
 
-func handleReadPoems(conn net.Conn) {
-	msg := ""
-	for i, poem := range poems {
-		msg += fmt.Sprintf("[%v] %v - %v\n", i, poem.Author, poem.Title)
+func getSelectedPoem() (string, error) {
+	poem, err := os.ReadFile(POEMS_DIR + poems[chosenSonnetToRead].File.Name())
+	if err != nil {
+		return "", err
 	}
 
-	conn.Write([]byte(msg))
+	return string(poem), nil
+}
 
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		client_msg := scanner.Text()
-		fmt.Printf("(read) Message received: [%v]\n", client_msg)
-
-		choice, err := strconv.Atoi(strings.Trim(client_msg, " "))
+func handleChoice(choice int, state *int) {
+	previousState = *state
+	switch *state {
+	case STATE_FIRST_SCREEN:
+		switch choice {
+		case -1:
+			*state = STATE_BREAK_CONNECTION
+		case 1:
+			*state = STATE_SHOW_POEMS
+		case 2:
+			*state = STATE_START_GAME
+		default:
+			*state = STATE_INVALID_CHOICE
+		}
+	case STATE_SELECT_POEMS:
 		if choice == -1 {
-			conn.Write([]byte("Saindo do modo leitura"))
-			return
+			*state = STATE_FIRST_SCREEN
+		} else if choice < -1 || choice > lenSonnets {
+			*state = STATE_INVALID_CHOICE
+		} else {
+			*state = STATE_POEM_SELECTED
+			chosenSonnetToRead = choice
 		}
-		if err != nil || choice >= lenSonnets || choice < 0 {
-			conn.Write([]byte("Mensagem inválida: [" + client_msg + "]"))
-			continue
-		}
-
-		poem, err := os.ReadFile(POEMS_DIR + poems[choice].File.Name())
-		if err != nil {
-			fmt.Println("Error opening", poems[choice].Title, ": ", err)
-			conn.Write([]byte("Error opening " + poems[choice].Title))
-			continue
-		}
-
-		conn.Write(poem)
-	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Println("Error reading from connection: ", err)
+	default:
 		return
 	}
+}
 
+func getMsg(state *int) string {
+	switch *state {
+	case STATE_FIRST_SCREEN:
+		return fmt.Sprintf("Jogo dos %v sonetos \n\t[1] Ler Sonetos \n\t[2] Jogo dos Sonetos\n\t[-1] Encerrar conexão", lenSonnets)
+	case STATE_SHOW_POEMS:
+		var msg string
+		for i, poem := range poems {
+			msg += fmt.Sprintf("[%v] %v - %v\n", i, poem.Author, poem.Title)
+		}
+		msg += "[-1] Sair\n"
+		*state = STATE_SELECT_POEMS
+		return msg
+
+	case STATE_POEM_SELECTED:
+		poem, err := getSelectedPoem()
+		if err != nil {
+			fmt.Println("Error reading selected poem:", err)
+			return "Erro ao carregar o poema."
+		}
+		*state = STATE_RETURN_TO_FIRST_SCREEN
+		return poem
+
+	case STATE_BREAK_CONNECTION:
+		return "!!!"
+
+	case STATE_INVALID_CHOICE:
+		*state = previousState
+		return "Mensagem inválida"
+
+	default:
+		return ""
+	}
 }
 
 func handler(conn net.Conn) {
-	msg := fmt.Sprintf("Jogo dos %v sonetos \n\t[1] Ler Sonetos \n\t[2] Jogo dos Sonetos", lenSonnets)
+	state := STATE_FIRST_SCREEN
 
-	_, err := conn.Write([]byte(msg))
-	if err != nil {
-		fmt.Println("Error writing to connection: ", err)
-		return
-	}
-
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		client_msg := scanner.Text()
-		fmt.Printf("(main) Message received: [%v]\n", client_msg)
-
-		choice, err := strconv.Atoi(strings.Trim(client_msg, " "))
+	for {
+		msg := getMsg(&state)
+		_, err := conn.Write([]byte(msg))
 		if err != nil {
-			conn.Write([]byte("Mensagem inválida: [" + client_msg + "]"))
+			fmt.Println("Error writing to connection: ", err)
+			return
 		}
 
-		switch choice {
-		case 1:
-			handleReadPoems(conn)
-			// continue
-		case 2:
-			handlePlay(conn)
-			// continue
-		case -1:
-			fmt.Printf("Connection finished with [%v]\n", conn.RemoteAddr())
-			conn.Write([]byte("!!!"))
-			return
-		default:
-			conn.Write([]byte(fmt.Sprintf("Opção inválida: %v", choice)))
+		if state == STATE_RETURN_TO_FIRST_SCREEN {
+			state = STATE_FIRST_SCREEN
 			continue
 		}
-	}
 
-	if err := scanner.Err(); err != nil {
-		fmt.Println("Error reading from connection: ", err)
-		return
-	}
+		if state == STATE_BREAK_CONNECTION {
+			fmt.Printf("Connection finished with [%v]\n", conn.RemoteAddr())
+			return
+		}
 
+		scanner := bufio.NewScanner(conn)
+		for scanner.Scan() {
+			client_msg := scanner.Text()
+			fmt.Printf("Message received: [%v]\n", client_msg)
+
+			choice, err := strconv.Atoi(strings.Trim(client_msg, " "))
+			if err != nil {
+				conn.Write([]byte("Mensagem inválida: [" + client_msg + "]"))
+				continue
+			}
+
+			handleChoice(choice, &state)
+			break
+		}
+
+		if err := scanner.Err(); err != nil {
+			fmt.Println("Error reading from connection: ", err)
+			return
+		}
+
+	}
 }
 
 func main() {
 	var err error
-
 	poems, err = sonnets.GetSonnets(POEMS_DIR)
 	if err != nil {
 		fmt.Println("Error getting the poems: ", err)

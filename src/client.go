@@ -23,7 +23,7 @@ func main() {
 
 	defer conn.Close()
 
-	fmt.Println("Connection established with the server!")
+	fmt.Print("Connection established with the server!\n\n")
 
 	for {
 		buffer := make([]byte, 1024)
@@ -34,7 +34,7 @@ func main() {
 		}
 
 		serverMsg := string(buffer[:msgLen])
-		fmt.Print(serverMsg)
+		fmt.Println(serverMsg)
 		if serverMsg[:3] == "!!!" {
 			fmt.Println("Conexion finished")
 			break
